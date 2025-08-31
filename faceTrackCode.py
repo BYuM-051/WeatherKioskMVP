@@ -6,19 +6,11 @@ import sys
 import os
 from typing import Final
 
-# initialize servo
-# 6221MG servo
-# 1. 0 degree = 500us
-# 2. 90 degree = 1500us
-# 3. 180 degree = 2500us
+Debug : Final = True
+
 pi = pigpio.pi();
 if not pi.connected:
     sys.exit("run pigpio daemon first");
-
-PanServoPin : Final = 17;
-TiltServoPin : Final = 27;
-pi.set_mode(PanServoPin, pigpio.OUTPUT);
-pi.set_mode(TiltServoPin, pigpio.OUTPUT);
 
 # initialize camera
 # OV5647 5MP camera module
@@ -27,8 +19,8 @@ pi.set_mode(TiltServoPin, pigpio.OUTPUT);
 # 3. 480p60/90 video
 picam2 = Picamera2();
 
-frameWidth = 1920; # 320, 640, 1280, 1920
-frameHeight = 1080; # 240, 480, 720, 1080
+frameWidth = 640; # 320, 640, 1280, 1920
+frameHeight = 480; # 240, 480, 720, 1080
 frameRate = 30; # 30, 60, 90
 format = "YUV420"; # YUV420, RGB888, BGR888, RGB8888, BGR8888
 
@@ -42,7 +34,9 @@ picam2.configure (
     )
 );
 picam2.start();
-time.sleep(2); # camera warm-up time
+if Debug :
+    print("Camera started");
+time.sleep(2); # camera warm-up
 
 # configure face detector
 base = os.path.dirname(os.path.abspath(__file__));
@@ -54,21 +48,16 @@ faceCascade = cv2.CascadeClassifier(xml_path);
 if faceCascade.empty():
     sys.exit("error loading cascade classifier");
 
+# initialize servo
+# 6221MG servo
+# 1. 0 degree = 500us
+# 2. 90 degree = 1500us
+# 3. 180 degree = 2500us
 
-# servo demonstration code
-# 90 degree (center)
-pi.set_servo_pulsewidth(PanServoPin, 1500);
-pi.set_servo_pulsewidth(TiltServoPin, 1500);
-time.sleep(1);
-# 0 degree (left/up)
-pi.set_servo_pulsewidth(PanServoPin, 500);
-time.sleep(1);
-# 180 degree (right/down)
-pi.set_servo_pulsewidth(PanServoPin, 2500);
-time.sleep(1);
-# 90 degree (center)
-pi.set_servo_pulsewidth(PanServoPin, 1500);
-time.sleep(1);
+PanServoPin : Final = 17;
+TiltServoPin : Final = 27;
+pi.set_mode(PanServoPin, pigpio.OUTPUT);
+pi.set_mode(TiltServoPin, pigpio.OUTPUT);
 
 # function to convert angle to pulse width
 def angle_to_pulse(angle, min_us=500, max_us=2500):
@@ -80,9 +69,27 @@ def set_servo_angle(servo_pin, angle):
     pulse_width = angle_to_pulse(angle);
     pi.set_servo_pulsewidth(servo_pin, pulse_width);
 
+# servo demonstration code
+# 90 degree (center)
+set_servo_angle(PanServoPin, 90);
+set_servo_angle(TiltServoPin, 90);
+time.sleep(0.5);
+# 0 degree (left/up)
+set_servo_angle(PanServoPin, 0);
+time.sleep(0.5);
+# 180 degree (right/down)
+set_servo_angle(PanServoPin, 180);
+time.sleep(0.5);
+# 90 degree (center)
+set_servo_angle(PanServoPin, 90);
+time.sleep(0.5);
+
 currentPan = 90;
 currentTilt = 90;
-deatBand : Final = 2;
+set_servo_angle(PanServoPin, currentPan);
+set_servo_angle(TiltServoPin, currentTilt);
+
+deadBand_Angle : Final = 2.0;
 
 lastUpdateTime = int(time.monotonic() * 1000);
 returnPeriod : Final = 2;
@@ -101,7 +108,9 @@ try :
             # if faces are detected, track the first face
             if len(faces) > 0:
                 update = False;
-                print(f"faces detected: {len(faces)}");
+
+                if Debug :
+                    print(f"faces detected: {len(faces)}");
                 (x, y, w, h) = faces[0];
                 face_center_x = x + w // 2;
                 face_center_y = y + h // 2;
@@ -113,10 +122,10 @@ try :
                 Targetpan = max(0.0, min(180.0, currentPan + 1 * (errorX // 10)));
                 Targettilt = max(0.0, min(180.0, currentTilt - 1 * (errorY // 10)));
 
-                if abs(currentPan - Targetpan) > deatBand :
+                if abs(currentPan - Targetpan) > deadBand_Angle :
                     currentPan = Targetpan;
                     update = True;
-                if abs(currentTilt - Targettilt) > deatBand :
+                if abs(currentTilt - Targettilt) > deadBand_Angle :
                     currentTilt = Targettilt;
                     update = True;
                 if update :
@@ -124,7 +133,8 @@ try :
                     set_servo_angle(TiltServoPin, currentTilt);
                     update = False;
                     lastUpdateTime = int(time.monotonic() * 1000);
-                print(f"face center: ({face_center_x}, {face_center_y}), pan: {currentPan}, tilt: {currentTilt}");
+                if Debug :
+                    print(f"face center: ({face_center_x}, {face_center_y}), pan: {currentPan}, tilt: {currentTilt}");
             else:
                 if (int(time.monotonic() * 1000) - lastUpdateTime) > (returnPeriod):
                     if currentPan != 90:
@@ -133,7 +143,8 @@ try :
                     if currentTilt != 90:
                         currentTilt = 90;
                         set_servo_angle(TiltServoPin, currentTilt);
-                print("no face detected");
+                if Debug :
+                    print("no face detected");
             time.sleep(0.1);
 
         except Exception as e:
