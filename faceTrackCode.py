@@ -19,12 +19,12 @@ picam2 = Picamera2();
 frameWidth = 640; # 320, 640, 1280, 1920
 frameHeight = 480; # 240, 480, 720, 1080
 frameRate = 30; # 30, 60, 90
-format = "YUV420"; # YUV420, RGB888, BGR888, RGB8888, BGR8888
+pixelFormat = "YUV420"; # YUV420, RGB888, BGR888, RGB8888, BGR8888
 
 picam2.configure (
     picam2.create_preview_configuration (
         main = {
-            "format": format, 
+            "format": pixelFormat, 
             "size": (frameWidth, frameHeight)
         },
         controls ={"FrameRate": frameRate}
@@ -56,6 +56,18 @@ if profileFaceCascade.empty():
 # initialize serial (arduino nano)
 nano = serial.Serial('/dev/ttyUSB0', 115200, timeout=1);
 time.sleep(2); # serial port warm-up
+
+nano.reset_input_buffer();
+nano.reset_output_buffer();
+
+PanDirection : Final = 1; # 1 = normal, -1 = inverted
+TiltDirection : Final = -1; # 1 = normal, -1 = inverted
+
+PanLimit : Final = (0, 180);
+TiltLimit : Final = (0, 180);
+
+def clamp(value, low, high) :
+    return high if value > high else low if value < low else value;
 
 def send_servo_angle(pan = None, tilt = None) :
     p = "0" if pan is None else str(int(pan));
@@ -124,7 +136,8 @@ currentPan = 90;
 currentTilt = 90;
 send_servo_angle(currentPan, currentTilt);
 
-deadBand_Angle : Final = 2.0;
+deadBandWidth : Final = frameWidth / 6; # 1/6 of frame width
+deadBandHeight : Final = frameHeight / 6; # 1/6 of frame
 
 lastUpdateTime = int(time.monotonic() * 1000);
 lastReturnedTime = int(time.monotonic() * 1000);
@@ -140,49 +153,60 @@ try :
             frame = picam2.capture_array();
             gray = frame[:frameHeight, :frameWidth];
 
-            # detect faces
+            everyFaces = [];
             faces = frontalFaceCascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60));
 
-            # if faces are detected, track the first face
             if len(faces) > 0:
                 faceFound = True;
-                update = False;
 
                 if Debug :
-                    print(f"faces detected: {len(faces)}");
+                    print(f"frontal faces detected: {len(faces)}");
                 (x, y, w, h) = max(faces, key=lambda rect: rect[2] * rect[3]);
+                everyFaces.append((x, y, w, h));
+
+            faces = profileFaceCascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60));
+            
+            if len(faces) > 0:
+                faceFound = True;
+
+                if Debug :
+                    print(f"right faces detected: {len(faces)}");
+                (x, y, w, h) = max(faces, key=lambda rect: rect[2] * rect[3]);
+                everyFaces.append((x, y, w, h));
+
+            flippedCapture = cv2.flip(gray, 1);
+            faces = profileFaceCascade.detectMultiScale(flippedCapture, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60));
+        
+            if len(faces) > 0:
+                faceFound = True;
+
+                if Debug :
+                    print(f"left faces detected: {len(faces)}");
+                (x, y, w, h) = max(faces, key=lambda rect: rect[2] * rect[3]);
+                everyFaces.append((frameWidth - (x + w), y, w, h));
+
+            if faceFound :
+                (x, y, w, h) = max(everyFaces, key=lambda rect: rect[2] * rect[3]);
                 face_center_x = x + w // 2;
                 face_center_y = y + h // 2;
 
-            if faceFound == False :
-                faces = profileFaceCascade.detectMultiScale(gray, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60));
+                # MVP of tracking
+                # if X axis is in left side, turn right
+                if face_center_x < (frameWidth / 2 - deadBandWidth) :
+                    currentPan = clamp(currentPan + 2.0, (PanLimit[0]), (PanLimit[1]));
+                elif face_center_x > (frameWidth / 2 + deadBandWidth) :
+                    currentPan = clamp(currentPan - 2.0, (PanLimit[0]), (PanLimit[1]));
+                # if Y axis is in upper side, turn up
+                if face_center_y < (frameHeight / 2 - deadBandHeight) :
+                    currentTilt = clamp(currentTilt + 2.0, (TiltLimit[0]), (TiltLimit[1]));
+                elif face_center_y > (frameHeight / 2 + deadBandHeight) :
+                    currentTilt = clamp(currentTilt - 2.0, (TiltLimit[0]), (TiltLimit[1]));
                 
-                if len(faces) > 0:
-                    faceFound = True;
-                    update = False;
+                send_servo_angle(currentPan, currentTilt);
+                lastUpdateTime = int(time.monotonic() * 1000);
 
-                    if Debug :
-                        print(f"faces detected: {len(faces)}");
-                    (x, y, w, h) = max(faces, key=lambda rect: rect[2] * rect[3]);
-                    face_center_x = x + w // 2;
-                    face_center_y = y + h // 2;
-            
-            if faceFound == False :
-                flippedCapture = cv2.flip(gray, 1);
-                faces = profileFaceCascade.detectMultiScale(flippedCapture, scaleFactor=1.1, minNeighbors=5, minSize=(60, 60));
-            
-                if len(faces) > 0:
-                    faceFound = True;
-                    update = False;
+                #TODO : kill search thread if running
 
-                    if Debug :
-                        print(f"faces detected: {len(faces)}");
-                    (x, y, w, h) = max(faces, key=lambda rect: rect[2] * rect[3]);
-                    face_center_x = frameWidth - (x + w // 2);
-                    face_center_y = y + h // 2;
-
-
-            if faceFound :
                 if Debug :
                     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2);
                     cv2.circle(frame, (face_center_x, face_center_y), 5, (255, 0, 0), -1);
@@ -190,21 +214,31 @@ try :
 
             else :
 
-                if((int(time.monotonic() * 1000) - lastUpdateTime) > (returnPeriod * 1000)) :
+                if(searchFlag == 0 and (int(time.monotonic() * 1000) - lastUpdateTime) > (returnPeriod * 1000)) :
                     if currentPan != 90 :
                         currentPan = 90;
                     if currentTilt != 90 :
                         currentTilt = 90;
+                    send_servo_angle(currentPan, currentTilt);
                     lastUpdateTime = int(time.monotonic() * 1000);
                     lastReturnedTime = int(time.monotonic() * 1000);
-                    searchFlag = 1;
+                    # TODO : start search thread if not running
+                    # searchFlag = 1;
                 
-                if(searchFlag is not 0 and ((int(time.monotonic() * 1000) - lastReturnedTime) > (searchPeriod * 1000))) :
-                    #step 1 : pan left
-                    currentPan = 0;
-                    send_servo_angle(currentPan, currentTilt);
-                    #step 2 : pan right
-                    #step 3 : center
+                # TODO : seperate search thread
+                # if(searchFlag != 0 and ((int(time.monotonic() * 1000) - lastReturnedTime) > (searchPeriod * 1000))) :
+                #     #step 1 : pan left
+                #     currentPan = 0;
+                #     send_servo_angle(currentPan, currentTilt);
+                #     searchFlag = 2;
+                #     #step 2 : pan right
+                #     currentPan = 180;
+                #     send_servo_angle(currentPan, currentTilt);
+                #     searchFlag = 3;
+                #     #step 3 : center
+                #     currentPan = 90;
+                #     send_servo_angle(currentPan, currentTilt);
+                #     searchFlag = 0;
 
                 # these code was deprecated due to using arduino nano for servo control
                 #===============================================================================================
@@ -220,7 +254,7 @@ try :
 
                 if Debug :
                     print("no face detected");
-            
+
             if Debug :
                 cv2.imshow("Frame", frame);
                 if cv2.waitKey(1) & 0xFF == ord('q') :
